@@ -50,22 +50,24 @@ async def get_fear_greed():
 
 
 async def get_funding_rates():
+    """Фандинг рейты с OKX (публичный API, без геоблока)"""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                "https://api.bybit.com/v5/market/tickers",
-                params={"category": "linear", "symbol": "BTCUSDT"},
+                "https://www.okx.com/api/v5/public/funding-rate",
+                params={"instId": "BTC-USDT-SWAP"},
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 btc_data = await resp.json()
             async with session.get(
-                "https://api.bybit.com/v5/market/tickers",
-                params={"category": "linear", "symbol": "ETHUSDT"},
+                "https://www.okx.com/api/v5/public/funding-rate",
+                params={"instId": "ETH-USDT-SWAP"},
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 eth_data = await resp.json()
-            btc_rate = float(btc_data["result"]["list"][0].get("fundingRate", 0)) * 100
-            eth_rate = float(eth_data["result"]["list"][0].get("fundingRate", 0)) * 100
+
+            btc_rate = float(btc_data["data"][0].get("fundingRate", 0)) * 100
+            eth_rate = float(eth_data["data"][0].get("fundingRate", 0)) * 100
             return {
                 "BTC_funding": btc_rate,
                 "ETH_funding": eth_rate,
