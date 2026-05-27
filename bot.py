@@ -19,6 +19,8 @@ CHAT_ID = os.environ.get("CHAT_ID")
 # ============================================================
 
 async def get_prices():
+    """Цены с резервными источниками: CoinGecko → Coinpaprika → OKX"""
+    # Источник 1: CoinGecko
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -30,19 +32,76 @@ async def get_prices():
                     "sparkline": "false",
                     "price_change_percentage": "24h,7d"
                 },
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=aiohttp.ClientTimeout(total=8)
             ) as resp:
-                data = await resp.json()
-                result = {}
-                for coin in data:
-                    key = "BTC" if coin["id"] == "bitcoin" else "ETH"
-                    result[key] = coin["current_price"]
-                    result[f"{key}_change_24h"] = round(coin.get("price_change_percentage_24h", 0) or 0, 2)
-                    result[f"{key}_change_7d"] = round(coin.get("price_change_percentage_7d_in_currency", 0) or 0, 2)
-                    result[f"{key}_volume_24h"] = coin.get("total_volume", 0)
-                    result[f"{key}_ath"] = coin.get("ath", 0)
-                    result[f"{key}_ath_pct"] = round(coin.get("ath_change_percentage", 0) or 0, 1)
-                return result
+                if resp.status == 200:
+                    data = await resp.json()
+                    if isinstance(data, list) and len(data) >= 2:
+                        result = {}
+                        for coin in data:
+                            key = "BTC" if coin["id"] == "bitcoin" else "ETH"
+                            result[key] = coin["current_price"]
+                            result[f"{key}_change_24h"] = round(coin.get("price_change_percentage_24h", 0) or 0, 2)
+                            result[f"{key}_change_7d"] = round(coin.get("price_change_percentage_7d_in_currency", 0) or 0, 2)
+                            result[f"{key}_volume_24h"] = coin.get("total_volume", 0)
+                            result[f"{key}_ath_pct"] = round(coin.get("ath_change_percentage", 0) or 0, 1)
+                        if result.get("BTC"):
+                            return result
+    except Exception:
+        pass
+
+    # Источник 2: Coinpaprika (другой провайдер)
+    try:
+        async with aiohttp.ClientSession() as session:
+            btc_resp = await session.get("https://api.coinpaprika.com/v1/tickers/btc-bitcoin", timeout=aiohttp.ClientTimeout(total=8))
+            eth_resp_data = await session.get("https://api.coinpaprika.com/v1/tickers/eth-ethereum", timeout=aiohttp.ClientTimeout(total=8))
+            if btc_resp.status == 200:
+                btc = await btc_resp.json()
+                eth = await eth_resp_data.json()
+                btc_q = btc.get("quotes", {}).get("USD", {})
+                eth_q = eth.get("quotes", {}).get("USD", {})
+                return {
+                    "BTC": btc_q.get("price", "н/д"),
+                    "ETH": eth_q.get("price", "н/д"),
+                    "BTC_change_24h": round(btc_q.get("percent_change_24h", 0) or 0, 2),
+                    "ETH_change_24h": round(eth_q.get("percent_change_24h", 0) or 0, 2),
+                    "BTC_change_7d": round(btc_q.get("percent_change_7d", 0) or 0, 2),
+                    "BTC_volume_24h": btc_q.get("volume_24h", 0),
+                    "BTC_ath_pct": "н/д",
+                }
+    except Exception:
+        pass
+
+    # Источник 3: OKX (уже работает для фандинга)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://www.okx.com/api/v5/market/ticker",
+                params={"instId": "BTC-USDT"},
+                timeout=aiohttp.ClientTimeout(total=8)
+            ) as btc_r:
+                btc_data = await btc_r.json()
+            async with session.get(
+                "https://www.okx.com/api/v5/market/ticker",
+                params={"instId": "ETH-USDT"},
+                timeout=aiohttp.ClientTimeout(total=8)
+            ) as eth_r:
+                eth_data = await eth_r.json()
+            btc_ticker = btc_data["data"][0]
+            eth_ticker = eth_data["data"][0]
+            btc_price = float(btc_ticker["last"])
+            eth_price = float(eth_ticker["last"])
+            btc_open = float(btc_ticker["open24h"])
+            eth_open = float(eth_ticker["open24h"])
+            return {
+                "BTC": btc_price,
+                "ETH": eth_price,
+                "BTC_change_24h": round((btc_price - btc_open) / btc_open * 100, 2),
+                "ETH_change_24h": round((eth_price - eth_open) / eth_open * 100, 2),
+                "BTC_change_7d": "н/д",
+                "BTC_volume_24h": float(btc_ticker.get("volCcy24h", 0)),
+                "BTC_ath_pct": "н/д",
+            }
     except Exception as e:
         return {"BTC": "н/д", "ETH": "н/д", "error": str(e)}
 
@@ -94,20 +153,44 @@ async def get_funding_rates():
 
 
 async def get_market_structure():
+    # Источник 1: CoinGecko global
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 "https://api.coingecko.com/api/v3/global",
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=aiohttp.ClientTimeout(total=8)
             ) as resp:
-                data = await resp.json()
-                d = data["data"]
-                return {
-                    "btc_dominance": round(d["market_cap_percentage"].get("btc", 0), 2),
-                    "eth_dominance": round(d["market_cap_percentage"].get("eth", 0), 2),
-                    "total_market_cap_b": round(d["total_market_cap"].get("usd", 0) / 1e9, 0),
-                    "market_cap_change_24h": round(d.get("market_cap_change_percentage_24h_usd", 0), 2),
-                }
+                if resp.status == 200:
+                    data = await resp.json()
+                    d = data["data"]
+                    result = {
+                        "btc_dominance": round(d["market_cap_percentage"].get("btc", 0), 2),
+                        "eth_dominance": round(d["market_cap_percentage"].get("eth", 0), 2),
+                        "total_market_cap_b": round(d["total_market_cap"].get("usd", 0) / 1e9, 0),
+                        "market_cap_change_24h": round(d.get("market_cap_change_percentage_24h_usd", 0), 2),
+                    }
+                    if result["btc_dominance"]:
+                        return result
+    except Exception:
+        pass
+
+    # Источник 2: Coinpaprika global
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://api.coinpaprika.com/v1/global",
+                timeout=aiohttp.ClientTimeout(total=8)
+            ) as resp:
+                if resp.status == 200:
+                    d = await resp.json()
+                    total = d.get("market_cap_usd", 0)
+                    btc_cap = d.get("bitcoin_dominance_percentage", 0)
+                    return {
+                        "btc_dominance": round(btc_cap, 2),
+                        "eth_dominance": "н/д",
+                        "total_market_cap_b": round(total / 1e9, 0),
+                        "market_cap_change_24h": round(d.get("market_cap_change_24h", 0), 2),
+                    }
     except Exception as e:
         return {"btc_dominance": "н/д", "total_market_cap_b": "н/д", "error": str(e)}
 
@@ -491,6 +574,4 @@ if __name__ == "__main__":
         exit(1)
 
     asyncio.run(run_analysis())
-    start_scheduler()
-    start_scheduler()
     start_scheduler()
