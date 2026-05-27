@@ -53,20 +53,22 @@ async def get_funding_rates():
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                "https://fapi.binance.com/fapi/v1/premiumIndex",
-                params={"symbol": "BTCUSDT"},
+                "https://api.bybit.com/v5/market/tickers",
+                params={"category": "linear", "symbol": "BTCUSDT"},
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 btc_data = await resp.json()
             async with session.get(
-                "https://fapi.binance.com/fapi/v1/premiumIndex",
-                params={"symbol": "ETHUSDT"},
+                "https://api.bybit.com/v5/market/tickers",
+                params={"category": "linear", "symbol": "ETHUSDT"},
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 eth_data = await resp.json()
+            btc_rate = float(btc_data["result"]["list"][0].get("fundingRate", 0)) * 100
+            eth_rate = float(eth_data["result"]["list"][0].get("fundingRate", 0)) * 100
             return {
-                "BTC_funding": float(btc_data.get("lastFundingRate", 0)) * 100,
-                "ETH_funding": float(eth_data.get("lastFundingRate", 0)) * 100,
+                "BTC_funding": btc_rate,
+                "ETH_funding": eth_rate,
             }
     except Exception as e:
         return {"BTC_funding": "н/д", "ETH_funding": "н/д", "error": str(e)}
