@@ -22,13 +22,15 @@ async def get_prices():
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                "https://api.binance.com/api/v3/ticker/price",
-                params={"symbols": '["BTCUSDT","ETHUSDT"]'},
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": "bitcoin,ethereum", "vs_currencies": "usd"},
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 data = await resp.json()
-                prices = {item["symbol"]: float(item["price"]) for item in data}
-                return {"BTC": prices.get("BTCUSDT", 0), "ETH": prices.get("ETHUSDT", 0)}
+                return {
+                    "BTC": data["bitcoin"]["usd"],
+                    "ETH": data["ethereum"]["usd"]
+                }
     except Exception as e:
         return {"BTC": "н/д", "ETH": "н/д", "error": str(e)}
 
