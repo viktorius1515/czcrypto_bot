@@ -293,10 +293,48 @@ async def get_news():
     }
 
 
+
+async def get_macro():
+    """
+    Макро данные: DXY, S&P 500, золото, нефть.
+    Используем Yahoo Finance неофициальный API — работает без ключа.
+    """
+    symbols = {
+        "DX-Y.NYB": "dxy",       # Индекс доллара
+        "%5EGSPC": "sp500",       # S&P 500
+        "GC=F": "gold",           # Золото (фьючерс)
+        "BTC-USD": "btc_yahoo",   # BTC для кросс-проверки
+    }
+
+    results = {}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for symbol, key in symbols.items():
+            try:
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+                params = {"interval": "1d", "range": "5d"}
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        meta = data["chart"]["result"][0]["meta"]
+                        price = meta.get("regularMarketPrice", 0)
+                        prev_close = meta.get("chartPreviousClose", 0)
+                        change_pct = round((price - prev_close) / prev_close * 100, 2) if prev_close else 0
+                        results[key] = {"price": round(price, 2), "change_24h": change_pct}
+            except Exception:
+                results[key] = {"price": "н/д", "change_24h": "н/д"}
+
+    return results
+
+
 async def collect_all_data():
-    prices, fear_greed, funding, market, oi, news = await asyncio.gather(
+    prices, fear_greed, funding, market, oi, news, macro = await asyncio.gather(
         get_prices(), get_fear_greed(), get_funding_rates(),
-        get_market_structure(), get_open_interest(), get_news(),
+        get_market_structure(), get_open_interest(), get_news(), get_macro(),
         return_exceptions=True
     )
     if isinstance(prices, Exception): prices = {}
@@ -305,6 +343,7 @@ async def collect_all_data():
     if isinstance(market, Exception): market = {}
     if isinstance(oi, Exception): oi = {}
     if isinstance(news, Exception): news = {"headlines": [], "count": 0, "available": False}
+    if isinstance(macro, Exception): macro = {}
 
     return {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M UTC"),
@@ -314,6 +353,7 @@ async def collect_all_data():
         "market": market,
         "oi": oi,
         "news": news,
+        "macro": macro,
     }
 
 
@@ -330,6 +370,7 @@ def analyze_with_claude(market_data: dict) -> str:
     m = market_data.get("market", {})
     oi = market_data.get("oi", {})
     news = market_data.get("news", {})
+    macro = market_data.get("macro", {})
 
     headlines_text = ""
     if news.get("available") and news.get("headlines"):
@@ -337,46 +378,64 @@ def analyze_with_claude(market_data: dict) -> str:
     else:
         headlines_text = "\n📰 НОВОСТНОЙ ФОН: данные недоступны"
 
-    fg_change_day = fg.get('change_day', 0)
-    fg_change_week = fg.get('change_week', 0)
+    fg_change_day = fg.get("change_day", 0)
+    fg_change_week = fg.get("change_week", 0)
+
+    dxy = macro.get("dxy", {})
+    sp500 = macro.get("sp500", {})
+    gold = macro.get("gold", {})
+
+    macro_text = f"""
+📈 МАКРО ДАННЫЕ:
+- DXY (индекс доллара): {dxy.get("price", "н/д")} | 24ч: {dxy.get("change_24h", "н/д")}%
+- S&P 500: {sp500.get("price", "н/д")} | 24ч: {sp500.get("change_24h", "н/д")}%
+- Золото: ${gold.get("price", "н/д")} | 24ч: {gold.get("change_24h", "н/д")}%
+(DXY растёт = доллар силён = давление на BTC)
+(S&P растёт = risk-on = позитивно для BTC)
+(Золото растёт = бегство от риска)"""
+
+    btc_vol = p.get("BTC_volume_24h", 0)
+    try:
+        btc_vol_fmt = f"${float(btc_vol):,.0f}"
+    except:
+        btc_vol_fmt = str(btc_vol)
 
     prompt = f"""Ты профессиональный криптовалютный трейдер и аналитик. Проанализируй все данные и дай чёткий торговый сигнал.
 
-РЫНОЧНЫЕ ДАННЫЕ ({market_data['timestamp']}):
+РЫНОЧНЫЕ ДАННЫЕ ({market_data["timestamp"]}):
 
 💰 ЦЕНЫ:
-- BTC: ${p.get('BTC', 'н/д')} | 24ч: {p.get('BTC_change_24h', 'н/д')}% | 7д: {p.get('BTC_change_7d', 'н/д')}%
-- ETH: ${p.get('ETH', 'н/д')} | 24ч: {p.get('ETH_change_24h', 'н/д')}% | 7д: {p.get('ETH_change_7d', 'н/д')}%
-- BTC от ATH: {p.get('BTC_ath_pct', 'н/д')}%
-- BTC объём 24ч: ${p.get('BTC_volume_24h', 0):,}
+- BTC: ${p.get("BTC", "н/д")} | 24ч: {p.get("BTC_change_24h", "н/д")}% | 7д: {p.get("BTC_change_7d", "н/д")}%
+- ETH: ${p.get("ETH", "н/д")} | 24ч: {p.get("ETH_change_24h", "н/д")}%
+- BTC от ATH: {p.get("BTC_ath_pct", "н/д")}%
+- BTC объём 24ч: {btc_vol_fmt}
 
 😱 FEAR & GREED:
-- Сегодня: {fg.get('value', 'н/д')}/100 ({fg.get('classification', 'н/д')})
-- Вчера: {fg.get('yesterday', 'н/д')} | Неделю назад: {fg.get('week_ago', 'н/д')}
-- Изменение за день: {'+' if isinstance(fg_change_day, int) and fg_change_day > 0 else ''}{fg_change_day}
-- Изменение за неделю: {'+' if isinstance(fg_change_week, int) and fg_change_week > 0 else ''}{fg_change_week}
+- Сегодня: {fg.get("value", "н/д")}/100 ({fg.get("classification", "н/д")})
+- Вчера: {fg.get("yesterday", "н/д")} | Неделю назад: {fg.get("week_ago", "н/д")}
+- День: {("+" if isinstance(fg_change_day, int) and fg_change_day > 0 else "")}{fg_change_day} | Неделя: {("+" if isinstance(fg_change_week, int) and fg_change_week > 0 else "")}{fg_change_week}
 
 📊 ФАНДИНГ (8ч):
-- BTC: {f.get('BTC_funding', 'н/д')}% | ETH: {f.get('ETH_funding', 'н/д')}%
+- BTC: {f.get("BTC_funding", "н/д")}% | ETH: {f.get("ETH_funding", "н/д")}%
 
 📐 OPEN INTEREST (OKX):
-- BTC OI: {oi.get('btc_oi', 'н/д')} BTC
-- ETH OI: {oi.get('eth_oi', 'н/д')} ETH
+- BTC OI: {oi.get("btc_oi", "н/д")} BTC
 
 🌍 РЫНОК:
-- BTC Dom: {m.get('btc_dominance', 'н/д')}% | ETH Dom: {m.get('eth_dominance', 'н/д')}%
-- Total MCap: ${m.get('total_market_cap_b', 'н/д')}B | 24ч: {m.get('market_cap_change_24h', 'н/д')}%
+- BTC Dom: {m.get("btc_dominance", "н/д")}% | MCap: ${m.get("total_market_cap_b", "н/д")}B ({m.get("market_cap_change_24h", "н/д")}%)
+{macro_text}
 {headlines_text}
 
 СТРУКТУРА АНАЛИЗА:
 
-1. **ОБЩАЯ КАРТИНА** (2-3 предложения — синтез всех данных)
+1. **ОБЩАЯ КАРТИНА** (2-3 предложения — синтез крипто + макро)
 
 2. **КЛЮЧЕВЫЕ СИГНАЛЫ**:
-   - Тренд (цена 24ч + 7д + расстояние от ATH)
-   - Настроение (F&G динамика за день и неделю)  
+   - Крипто тренд (цена 24ч/7д, ATH%)
+   - Настроение (F&G динамика)
    - Деривативы (фандинг + OI)
-   - Новостной фон (если есть — позитив/негатив/нейтрально)
+   - Макро корреляции: как DXY/S&P/золото влияют прямо сейчас
+   - Новости (если есть)
 
 3. **ТОРГОВЫЙ СИГНАЛ**: 🟢 БЫЧИЙ / 🔴 МЕДВЕЖИЙ / 🟡 НЕЙТРАЛЬНЫЙ
 
@@ -386,7 +445,7 @@ def analyze_with_claude(market_data: dict) -> str:
 
 5. **РИСКИ** (1-2 пункта)
 
-Пиши чётко, без воды. Используй эмодзи. 300-400 слов."""
+Пиши чётко, без воды. Используй эмодзи. 320-420 слов."""
 
     message = client.messages.create(
         model="claude-opus-4-5",
@@ -394,6 +453,7 @@ def analyze_with_claude(market_data: dict) -> str:
         messages=[{"role": "user", "content": prompt}]
     )
     return message.content[0].text
+
 
 
 # ============================================================
@@ -479,6 +539,24 @@ def format_message(market_data: dict, analysis: str) -> str:
 {news_lines}
 """
 
+    # Макро блок
+    macro = market_data.get("macro", {})
+    dxy = macro.get("dxy", {})
+    sp500 = macro.get("sp500", {})
+    gold = macro.get("gold", {})
+
+    def macro_line(name, data, decimals=2):
+        price = data.get("price", "н/д")
+        ch = data.get("change_24h", "н/д")
+        return f"{name}: *{safe_num(price, decimals)}* {change_emoji(ch)} {safe_num(ch, 2)}%"
+
+    macro_section = f"""
+🌐 *МАКРО*
+{macro_line("DXY", dxy, 2)}
+{macro_line("S&P 500", sp500, 0)}
+{macro_line("Золото", gold, 0)}
+"""
+
     msg = f"""━━━━━━━━━━━━━━━━━━━━
 🤖 *КРИПТО СИГНАЛ*
 📅 {market_data['timestamp']}
@@ -503,7 +581,7 @@ BTC: *{safe_num(oi.get('btc_oi', 'н/д'), 0)} BTC*
 
 🌍 *РЫНОК*
 Dom: *{safe_num(m.get('btc_dominance'))}%* | MCap: *{safe_price(m.get('total_market_cap_b'))}B* {change_emoji(m.get('market_cap_change_24h'))} {safe_num(m.get('market_cap_change_24h'), 1)}%
-{news_section}
+{macro_section}{news_section}
 ━━━━━━━━━━━━━━━━━━━━
 🧠 *АНАЛИЗ CLAUDE*
 ━━━━━━━━━━━━━━━━━━━━
